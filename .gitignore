@@ -1,0 +1,12 @@
+data/
+docs/
+models/
+
+__pycache__/
+.DS_Store
+.claude/
+.vscode/
+
+
+venv/
+.env
