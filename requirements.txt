@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+streamlit
+opencv-python
+ultralytics
+supervision
+numpy
+pandas
+sqlalchemy
+psycopg2-binary
+pgvector
+python-multipart
+langchain
+langchain-community
+sentence-transformers
+transformers
+torch

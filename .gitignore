@@ -1,6 +1,9 @@
 data/
 docs/
 models/
+videos/
+notas*.txt
+yolo*.pt
 
 __pycache__/
 .DS_Store
