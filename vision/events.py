@@ -9,7 +9,7 @@ class EventEngine:
         events = []
 
         for track in tracks:
-            person_id = track.tracker_id
+            person_id = track[1]
 
             if person_id not in self.active:
                 self.active[person_id] = time.time()
