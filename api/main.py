@@ -1,11 +1,14 @@
 import logging
+from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile
 import shutil
+from sqlalchemy import func
 
 from db.database import get_db, init_db
-from db.models import Video
+from db.models import Event, Video
 from vision.pipeline import process_video
 from vision.video_metadata import parse_video_filename
 
@@ -15,14 +18,35 @@ logger = logging.getLogger(__name__)
 
 VIDEOS_DIR = Path("videos")
 
-app = FastAPI()
 
-
-@app.on_event("startup")
-def startup():
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
     VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
     init_db()
     logger.info("API startup completed: videos directory and metadata tables are ready")
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+def _serialize_video(row):
+    return {
+        "id": row.id,
+        "original_filename": row.original_filename,
+        "stored_filename": row.stored_filename,
+        "file_path": row.file_path,
+        "camera_id": row.camera_id,
+        "location_name": row.location_name,
+        "sector_number": row.sector_number,
+        "capture_started_at": row.capture_started_at.isoformat(),
+        "uploaded_at": row.uploaded_at.isoformat() if row.uploaded_at else None,
+        "processed_at": row.processed_at.isoformat() if row.processed_at else None,
+        "status": row.status,
+        "total_frames": row.total_frames,
+        "duration_seconds": row.duration_seconds,
+        "events_count": row.events_count,
+    }
 
 @app.post("/upload")
 async def upload(file: UploadFile, db=Depends(get_db)):
@@ -65,24 +89,57 @@ async def upload(file: UploadFile, db=Depends(get_db)):
 
 
 @app.get("/videos")
-def list_videos(db=Depends(get_db)):
-    rows = db.query(Video).order_by(Video.uploaded_at.desc()).all()
-    return [
-        {
-            "id": row.id,
-            "original_filename": row.original_filename,
-            "stored_filename": row.stored_filename,
-            "file_path": row.file_path,
-            "camera_id": row.camera_id,
-            "location_name": row.location_name,
-            "sector_number": row.sector_number,
-            "capture_started_at": row.capture_started_at.isoformat(),
-            "uploaded_at": row.uploaded_at.isoformat() if row.uploaded_at else None,
-            "processed_at": row.processed_at.isoformat() if row.processed_at else None,
-            "status": row.status,
-            "total_frames": row.total_frames,
-            "duration_seconds": row.duration_seconds,
-            "events_count": row.events_count,
-        }
-        for row in rows
-    ]
+def list_videos(
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    camera_id: str | None = None,
+    status: str | None = None,
+    capture_from: str | None = None,
+    capture_to: str | None = None,
+    db=Depends(get_db),
+):
+    query = db.query(Video)
+
+    if camera_id:
+        query = query.filter(Video.camera_id == camera_id)
+    if status:
+        query = query.filter(Video.status == status)
+
+    try:
+        if capture_from:
+            query = query.filter(Video.capture_started_at >= datetime.fromisoformat(capture_from))
+        if capture_to:
+            query = query.filter(Video.capture_started_at <= datetime.fromisoformat(capture_to))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="capture_from and capture_to must be ISO datetime strings") from exc
+
+    total = query.count()
+    rows = query.order_by(Video.uploaded_at.desc()).offset(skip).limit(limit).all()
+
+    return {
+        "items": [_serialize_video(row) for row in rows],
+        "pagination": {
+            "skip": skip,
+            "limit": limit,
+            "returned": len(rows),
+            "total": total,
+        },
+    }
+
+
+@app.get("/kpis")
+def get_kpis(db=Depends(get_db)):
+    total_videos = db.query(func.count(Video.id)).scalar() or 0
+    completed_videos = db.query(func.count(Video.id)).filter(Video.status == "completed").scalar() or 0
+    failed_videos = db.query(func.count(Video.id)).filter(Video.status == "failed").scalar() or 0
+    total_events = db.query(func.count(Event.id)).scalar() or 0
+    unique_people = db.query(func.count(func.distinct(Event.person_id))).scalar() or 0
+
+    return {
+        "total_videos": int(total_videos),
+        "completed_videos": int(completed_videos),
+        "failed_videos": int(failed_videos),
+        "total_events": int(total_events),
+        "unique_people": int(unique_people),
+        "avg_events_per_completed_video": (float(total_events) / float(completed_videos)) if completed_videos else 0.0,
+    }

@@ -207,7 +207,22 @@ Timing model:
 ### 4. New API endpoint
 
 * `POST /upload`: validates filename, persists metadata, processes video, stores events.
-* `GET /videos`: returns uploaded videos ordered by most recent.
+* `GET /videos`: returns uploaded videos with pagination and filters.
+* `GET /kpis`: returns live dashboard KPI aggregates from database.
+
+`GET /videos` query params:
+
+* `skip` (default `0`)
+* `limit` (default `20`, max `100`)
+* `camera_id` (optional)
+* `status` (optional)
+* `capture_from` (optional ISO datetime)
+* `capture_to` (optional ISO datetime)
+
+Response shape:
+
+* `items`: video rows
+* `pagination`: `skip`, `limit`, `returned`, `total`
 
 ### 5. Dashboard right column (20%)
 
@@ -217,6 +232,8 @@ The dashboard now uses an 80/20 layout:
 * Right 20%:
         * top: video visualizer
         * bottom: list of uploaded videos with status and event counts
+
+Dashboard now pulls live KPI values from `GET /kpis` and video list data from paginated `GET /videos`.
 
 ### 6. Verbose processing logs
 
@@ -228,7 +245,11 @@ Added logging for:
 * event persistence summary
 * processing failure path
 
-### 7. Test suite updates
+### 7. FastAPI startup modernization
+
+Startup initialization was migrated from deprecated startup events to FastAPI lifespan handlers.
+
+### 8. Test suite updates
 
 New tests were added under `tests/`:
 
@@ -237,11 +258,13 @@ New tests were added under `tests/`:
   * event engine behavior
 * Integration-style tests (mock-heavy):
   * upload endpoint behavior
-  * list videos endpoint
+        * list videos filters + pagination
+        * KPI endpoint aggregates
   * pipeline persistence flow
 * Dashboard behavior tests:
         * upload helper success path
         * uploaded-videos fetch failure fallback
+        * KPI fallback handling
 
 Run tests:
 

@@ -9,7 +9,9 @@ def test_fetch_uploaded_videos_returns_empty_on_request_failure(monkeypatch):
 
     monkeypatch.setattr(dashboard_app.requests, "get", raise_error)
 
-    assert dashboard_app.fetch_uploaded_videos() == []
+    items, pagination = dashboard_app.fetch_uploaded_videos_page()
+    assert items == []
+    assert pagination["total"] == 0
 
 
 def test_upload_video_file_success(monkeypatch):
@@ -26,3 +28,19 @@ def test_upload_video_file_success(monkeypatch):
     ok, message = dashboard_app.upload_video_file(fake_file)
     assert ok is True
     assert "processed" in message
+
+
+def test_fetch_kpis_returns_default_on_invalid_response(monkeypatch):
+    import dashboard.app as dashboard_app
+
+    class Response:
+        ok = True
+
+        @staticmethod
+        def json():
+            return []
+
+    monkeypatch.setattr(dashboard_app.requests, "get", lambda *_args, **_kwargs: Response())
+    payload = dashboard_app.fetch_kpis()
+    assert payload["total_videos"] == 0
+    assert payload["total_events"] == 0

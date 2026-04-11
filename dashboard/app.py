@@ -3,6 +3,8 @@ import requests
 
 API_URL = "http://localhost:8000"
 
+st.set_page_config(page_title="Coffee Vision Dashboard", layout="wide")
+
 
 def upload_video_file(uploaded_file, api_url=API_URL):
     files = {"file": uploaded_file}
@@ -23,20 +25,81 @@ def upload_video_file(uploaded_file, api_url=API_URL):
 
 
 def fetch_uploaded_videos(api_url=API_URL):
+    return fetch_uploaded_videos_page(api_url=api_url)
+
+
+def fetch_uploaded_videos_page(
+    api_url=API_URL,
+    *,
+    skip=0,
+    limit=20,
+    camera_id=None,
+    status=None,
+    capture_from=None,
+    capture_to=None,
+):
+    params = {
+        "skip": skip,
+        "limit": limit,
+    }
+    if camera_id:
+        params["camera_id"] = camera_id
+    if status and status != "all":
+        params["status"] = status
+    if capture_from:
+        params["capture_from"] = capture_from
+    if capture_to:
+        params["capture_to"] = capture_to
+
     try:
-        response = requests.get(f"{api_url}/videos", timeout=10)
+        response = requests.get(f"{api_url}/videos", params=params, timeout=10)
     except requests.RequestException:
-        return []
+        return [], {"skip": skip, "limit": limit, "returned": 0, "total": 0}
 
     if not response.ok:
-        return []
+        return [], {"skip": skip, "limit": limit, "returned": 0, "total": 0}
 
     try:
         data = response.json()
     except ValueError:
-        return []
+        return [], {"skip": skip, "limit": limit, "returned": 0, "total": 0}
 
-    return data if isinstance(data, list) else []
+    if not isinstance(data, dict):
+        return [], {"skip": skip, "limit": limit, "returned": 0, "total": 0}
+
+    items = data.get("items", [])
+    pagination = data.get("pagination", {"skip": skip, "limit": limit, "returned": 0, "total": 0})
+
+    if not isinstance(items, list):
+        items = []
+
+    return items, pagination
+
+
+def fetch_kpis(api_url=API_URL):
+    default = {
+        "total_videos": 0,
+        "completed_videos": 0,
+        "failed_videos": 0,
+        "total_events": 0,
+        "unique_people": 0,
+        "avg_events_per_completed_video": 0.0,
+    }
+
+    try:
+        response = requests.get(f"{api_url}/kpis", timeout=10)
+    except requests.RequestException:
+        return default
+
+    if not response.ok:
+        return default
+
+    try:
+        data = response.json()
+    except ValueError:
+        return default
+
+    return data if isinstance(data, dict) else default
 
 def render_dashboard():
     st.title("Coffee Vision Dashboard")
@@ -54,12 +117,27 @@ def render_dashboard():
                 st.error(message)
 
         st.header("KPIs")
-        st.metric("Customers", 10)
-        st.metric("Avg Wait", "3 min")
+        kpis = fetch_kpis()
+        kpi_col1, kpi_col2, kpi_col3 = st.columns(3)
+        kpi_col1.metric("Videos", kpis["total_videos"])
+        kpi_col2.metric("Events", kpis["total_events"])
+        kpi_col3.metric("Unique People", kpis["unique_people"])
+        st.metric("Avg Events / Completed Video", f"{kpis['avg_events_per_completed_video']:.2f}")
 
     with right_col:
         st.subheader("Video Viewer")
-        videos = fetch_uploaded_videos()
+        camera_filter = st.text_input("Camera filter (optional)")
+        status_filter = st.selectbox("Status", ["all", "uploaded", "processing", "completed", "failed"], index=0)
+        page_size = st.selectbox("Page size", [5, 10, 20], index=1)
+        page_number = st.number_input("Page", min_value=1, step=1, value=1)
+
+        skip = (int(page_number) - 1) * int(page_size)
+        videos, pagination = fetch_uploaded_videos_page(
+            skip=skip,
+            limit=int(page_size),
+            camera_id=camera_filter or None,
+            status=status_filter,
+        )
 
         if videos:
             labels = [f"{video['original_filename']} ({video['status']})" for video in videos]
@@ -78,6 +156,10 @@ def render_dashboard():
                 st.write(
                     f"- {video['original_filename']} | events={video['events_count']} | status={video['status']}"
                 )
+            st.caption(
+                f"Showing {pagination.get('returned', 0)} of {pagination.get('total', 0)} "
+                f"(skip={pagination.get('skip', 0)}, limit={pagination.get('limit', page_size)})"
+            )
         else:
             st.info("No uploaded videos found in database")
 
