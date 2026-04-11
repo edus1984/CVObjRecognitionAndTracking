@@ -15,3 +15,6 @@ langchain-community
 sentence-transformers
 transformers
 torch
+pytest
+pytest-mock
+httpx

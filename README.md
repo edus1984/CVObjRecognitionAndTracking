@@ -145,3 +145,106 @@ coffee-vision/
 * Waiter detection
 * Table detection
 * Better event detection
+
+---
+
+## 🆕 New Features Added
+
+### 1. Database bootstrap SQL (first run)
+
+The project now includes a bootstrap script at `db/init_schema.sql`.
+
+Run it once after creating your PostgreSQL database:
+
+```sql
+\i db/init_schema.sql
+```
+
+It creates:
+
+* `videos` table with capture metadata and processing status
+* `events` table with foreign key to `videos(id)`
+* indexes for capture/event timestamps, camera ID, and event type
+
+### 2. Video filename validation and metadata parsing
+
+Uploads are now validated against this format:
+
+```text
+[datetime]_[cameraID]_[location][sector].[ext]
+```
+
+Example:
+
+```text
+20260324T150520_C0104_SouthEast28.mp4
+```
+
+Parsed fields:
+
+* capture start datetime (`2026-03-24 15:05:20`)
+* camera ID (`C0104`)
+* location name (`SouthEast`)
+* sector number (`28`)
+* extension (`mp4`, `dav`, etc.)
+
+Invalid names are rejected with `HTTP 400`.
+
+### 3. Video/event persistence in processing pipeline
+
+When a video is uploaded:
+
+1. A `videos` row is created.
+2. `process_video` runs detection/tracking/event extraction.
+3. Events are stored in `events` linked with `video_id`.
+4. Video status is updated (`uploaded -> processing -> completed/failed`).
+
+Timing model:
+
+* `event_second` = relative seconds within video
+* `event_timestamp` = `capture_started_at + event_second`
+
+### 4. New API endpoint
+
+* `POST /upload`: validates filename, persists metadata, processes video, stores events.
+* `GET /videos`: returns uploaded videos ordered by most recent.
+
+### 5. Dashboard right column (20%)
+
+The dashboard now uses an 80/20 layout:
+
+* Left 80%: upload + KPI area
+* Right 20%:
+        * top: video visualizer
+        * bottom: list of uploaded videos with status and event counts
+
+### 6. Verbose processing logs
+
+Added logging for:
+
+* upload validation and rejection reasons
+* processing start/end
+* frame progress checkpoints
+* event persistence summary
+* processing failure path
+
+### 7. Test suite updates
+
+New tests were added under `tests/`:
+
+* Unit tests:
+  * filename parser validation
+  * event engine behavior
+* Integration-style tests (mock-heavy):
+  * upload endpoint behavior
+  * list videos endpoint
+  * pipeline persistence flow
+* Dashboard behavior tests:
+        * upload helper success path
+        * uploaded-videos fetch failure fallback
+
+Run tests:
+
+```bash
+pytest
+```
