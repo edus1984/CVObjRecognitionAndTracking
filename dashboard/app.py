@@ -104,7 +104,7 @@ def fetch_kpis(api_url=API_URL):
 def render_dashboard():
     st.title("Coffee Vision Dashboard")
 
-    left_col, right_col = st.columns([4, 1])
+    left_col, right_col = st.columns([3, 2])
 
     with left_col:
         uploaded = st.file_uploader("Upload video")
@@ -126,10 +126,20 @@ def render_dashboard():
 
     with right_col:
         st.subheader("Video Viewer")
-        camera_filter = st.text_input("Camera filter (optional)")
-        status_filter = st.selectbox("Status", ["all", "uploaded", "processing", "completed", "failed"], index=0)
-        page_size = st.selectbox("Page size", [5, 10, 20], index=1)
-        page_number = st.number_input("Page", min_value=1, step=1, value=1)
+
+        # Compact filters row 1: camera | status
+        fc1, fc2 = st.columns(2)
+        camera_filter = fc1.text_input("Camera", placeholder="Camera (e.g. C0104)", label_visibility="collapsed")
+        status_filter = fc2.selectbox(
+            "Status",
+            ["all", "uploaded", "processing", "completed", "failed"],
+            index=0,
+            label_visibility="collapsed",
+        )
+        # Compact filters row 2: page size | page number
+        pc1, pc2 = st.columns(2)
+        page_size = pc1.selectbox("Pg size", [5, 10, 20], index=1, label_visibility="collapsed")
+        page_number = pc2.number_input("Page", min_value=1, step=1, value=1, label_visibility="collapsed")
 
         skip = (int(page_number) - 1) * int(page_size)
         videos, pagination = fetch_uploaded_videos_page(
@@ -144,6 +154,7 @@ def render_dashboard():
             selected_label = st.selectbox("Uploaded videos", labels, index=0)
             selected_video = videos[labels.index(selected_label)]
 
+            # Video player first, before the list
             st.video(selected_video["file_path"])
             st.caption(
                 f"Camera: {selected_video['camera_id']} | "
