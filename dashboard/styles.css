@@ -1,0 +1,9 @@
+.main .block-container {
+    overflow: hidden;
+    padding-bottom: 1rem;
+}
+[data-testid="stColumn"] {
+    overflow-y: auto;
+    max-height: calc(100vh - 20px);
+    padding-right: 0.5rem;
+}
