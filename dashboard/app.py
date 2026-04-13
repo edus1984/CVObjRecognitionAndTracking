@@ -1,11 +1,102 @@
 from pathlib import Path
+import mimetypes
 
 import streamlit as st
 import requests
 
 API_URL = "http://localhost:8000"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 st.set_page_config(page_title="Coffee Vision Dashboard", layout="wide")
+
+
+def _resolve_file_path(file_path):
+    """Convert relative path to absolute for Streamlit compatibility."""
+    if not file_path:
+        return None
+    p = Path(file_path)
+    candidates = []
+    if p.is_absolute():
+        candidates.append(p)
+    else:
+        candidates.append(PROJECT_ROOT / p)
+        candidates.append(Path.cwd() / p)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate.resolve())
+
+    return None
+
+
+def _video_mime_type(file_path):
+    guessed, _ = mimetypes.guess_type(str(file_path))
+    if guessed and guessed.startswith("video/"):
+        return guessed
+    return "video/mp4"
+
+
+def _decode_fourcc(value):
+    try:
+        int_value = int(value)
+    except (TypeError, ValueError):
+        return None
+    if int_value <= 0:
+        return None
+
+    chars = [chr((int_value >> (8 * i)) & 0xFF) for i in range(4)]
+    code = "".join(chars).strip()
+    if len(code) != 4:
+        return None
+    if any((ord(c) < 32 or ord(c) > 126) for c in code):
+        return None
+    return code
+
+
+def _inspect_video_file(file_path):
+    path = Path(file_path)
+    suffix = path.suffix.lower()
+    mime_type = _video_mime_type(path)
+    codec = None
+
+    try:
+        import cv2
+
+        cap = cv2.VideoCapture(str(path))
+        try:
+            codec = _decode_fourcc(cap.get(cv2.CAP_PROP_FOURCC))
+        finally:
+            cap.release()
+    except Exception:
+        codec = None
+
+    return {
+        "container": suffix or "(none)",
+        "mime_type": mime_type,
+        "codec": codec or "unknown",
+    }
+
+
+def _bound_boxes_browser_warning(file_path):
+    details = _inspect_video_file(file_path)
+    suffix = details["container"]
+    codec = details["codec"]
+
+    if suffix not in {".mp4", ".webm", ".ogg"}:
+        return (
+            f"Bound-boxes video uses '{suffix or 'no extension'}' container, which may not play in all browsers. "
+            "Prefer .mp4 (H.264/AVC) for widest compatibility."
+        )
+
+    if suffix == ".mp4":
+        compatible_mp4_codecs = {"avc1", "h264", "x264"}
+        if codec != "unknown" and codec.lower() not in compatible_mp4_codecs:
+            return (
+                f"Bound-boxes video codec appears to be '{codec}' in MP4 container. "
+                "Some browsers may fail to decode it. Prefer H.264/AVC ('avc1')."
+            )
+
+    return None
 
 
 def upload_video_file(uploaded_file, api_url=API_URL):
@@ -24,6 +115,23 @@ def upload_video_file(uploaded_file, api_url=API_URL):
         detail = response.text or "Upload failed"
 
     return False, f"Upload rejected: {detail}"
+
+
+def reprocess_video(video_id, api_url=API_URL):
+    try:
+        response = requests.post(f"{api_url}/videos/{video_id}/reprocess", timeout=240)
+    except requests.RequestException as exc:
+        return False, f"API unavailable: {exc}"
+
+    if response.ok:
+        return True, "Video reprocessed"
+
+    try:
+        detail = response.json().get("detail", "Reprocess failed")
+    except ValueError:
+        detail = response.text or "Reprocess failed"
+
+    return False, f"Reprocess rejected: {detail}"
 
 
 def fetch_uploaded_videos(api_url=API_URL):
@@ -103,6 +211,21 @@ def fetch_kpis(api_url=API_URL):
 
     return data if isinstance(data, dict) else default
 
+
+def resolve_video_path(video, show_bound_boxes=False):
+    """Resolve video path with validation, preferring bound_boxes if requested."""
+    if show_bound_boxes:
+        bbox_path = _resolve_file_path(video.get("bound_boxes_file_path"))
+        if bbox_path:
+            return bbox_path
+        return None
+    else:
+        original_path = _resolve_file_path(video.get("file_path"))
+        if original_path:
+            return original_path
+    
+    return None
+
 def _load_css(path: Path) -> None:
     with open(path) as f:
         st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
@@ -112,6 +235,9 @@ def render_dashboard():
     _load_css(Path(__file__).parent / "styles.css")
 
     st.title("Coffee Vision Dashboard")
+
+    if "last_reprocess_feedback" not in st.session_state:
+        st.session_state["last_reprocess_feedback"] = None
 
     left_col, right_col = st.columns([3, 1])
 
@@ -151,6 +277,14 @@ def render_dashboard():
     with right_col:
         st.subheader("Video Viewer")
 
+        if st.session_state["last_reprocess_feedback"]:
+            ok, message = st.session_state["last_reprocess_feedback"]
+            if ok:
+                st.success(message)
+            else:
+                st.error(message)
+            st.session_state["last_reprocess_feedback"] = None
+
         # Read filter/pagination values from session state (first run uses defaults)
         _camera = st.session_state.get("rcol_camera", "")
         _status = st.session_state.get("rcol_status", "all")
@@ -170,12 +304,43 @@ def render_dashboard():
             labels = [f"{video['original_filename']} ({video['status']})" for video in videos]
             selected_label = st.selectbox("Uploaded videos", labels, index=0)
             selected_video = videos[labels.index(selected_label)]
+            show_bound_boxes = st.checkbox("Show bound boxes", value=False, key="viewer_show_bound_boxes")
 
-            st.video(selected_video["file_path"])
+            video_path = resolve_video_path(selected_video, show_bound_boxes=show_bound_boxes)
+            
+            if video_path:
+                try:
+                    st.video(video_path, format=_video_mime_type(video_path))
+                except Exception as e:
+                    st.error(f"Error loading video: {e}")
+                else:
+                    details = _inspect_video_file(video_path)
+                    diagnostics_label = "Bound-boxes" if show_bound_boxes else "Original"
+                    st.caption(
+                        f"{diagnostics_label} diagnostics: "
+                        f"container={details['container']} | "
+                        f"mime={details['mime_type']} | "
+                        f"codec={details['codec']}"
+                    )
+
+                    if show_bound_boxes:
+                        browser_warning = _bound_boxes_browser_warning(video_path)
+                        if browser_warning:
+                            st.warning(browser_warning)
+            else:
+                requested_type = "bound boxes" if show_bound_boxes else "original"
+                st.warning(f"Could not find {requested_type} video file. Status: {selected_video['status']}")
+            
             st.caption(
                 f"Camera: {selected_video['camera_id']} | "
                 f"Location: {selected_video['location_name']}#{selected_video['sector_number']}"
             )
+
+            if st.button("Reprocess selected video", use_container_width=True):
+                ok, message = reprocess_video(selected_video["id"])
+                st.session_state["last_reprocess_feedback"] = (ok, message)
+                if ok:
+                    st.rerun()
 
         else:
             st.info("No uploaded videos found in database")

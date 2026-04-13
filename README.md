@@ -9,6 +9,7 @@ Coffee Vision is a Proof‑of‑Concept for analyzing café operations using Com
 * Upload videos manually
 * Detect people using YOLO
 * Track individuals using ByteTrack
+* Generate an alternative video with person bound boxes and person_id labels
 * Generate operational events
 * Store results in PostgreSQL
 * Store embeddings using PGVector
@@ -132,6 +133,7 @@ coffee-vision/
 │   └── app.py
 │
 ├── videos/
+│   └── bound_boxes/
 ├── requirements.txt
 └── config.py
 ```
@@ -199,6 +201,15 @@ When a video is uploaded:
 3. Events are stored in `events` linked with `video_id`.
 4. Video status is updated (`uploaded -> processing -> completed/failed`).
 
+Additionally, during processing an annotated copy of the video is generated in:
+
+* `videos/bound_boxes/<original_filename>`
+
+Each frame in this alternative video includes:
+
+* person detection bound boxes
+* `person_id` labels from tracking
+
 Timing model:
 
 * `event_second` = relative seconds within video
@@ -224,6 +235,11 @@ Response shape:
 * `items`: video rows
 * `pagination`: `skip`, `limit`, `returned`, `total`
 
+Each video item now includes:
+
+* `file_path`: original uploaded video
+* `bound_boxes_file_path`: annotated bound-boxes video with the same filename under `videos/bound_boxes/`
+
 ### 5. Dashboard right column (20%)
 
 The dashboard now uses an 80/20 layout:
@@ -234,6 +250,11 @@ The dashboard now uses an 80/20 layout:
         * bottom: list of uploaded videos with status and event counts
 
 Dashboard now pulls live KPI values from `GET /kpis` and video list data from paginated `GET /videos`.
+
+The video viewer now includes a "Show bound boxes" checkbox:
+
+* unchecked: plays `file_path` (original video)
+* checked: plays `bound_boxes_file_path` (annotated video)
 
 ### 6. Verbose processing logs
 

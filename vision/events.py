@@ -17,7 +17,7 @@ class EventEngine:
                 self.active[person_id] = event_second
 
             elapsed = event_second - self.active[person_id]
-            if elapsed > 2 and person_id not in self.emitted:
+            if elapsed > 20 and person_id not in self.emitted:
                 events.append({
                     "person_id": person_id,
                     "event_type": "customer_seated",
