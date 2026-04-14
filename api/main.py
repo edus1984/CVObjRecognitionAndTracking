@@ -1,6 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Query, UploadFile
@@ -31,6 +31,19 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+_UNIT_SECONDS = {
+    "minutes": 60,
+    "hours": 60 * 60,
+    "days": 24 * 60 * 60,
+}
+
+_ALLOWED_INTERVALS = {
+    "minutes": {1, 5, 10},
+    "hours": {1, 2, 6},
+    "days": {1, 7},
+}
 
 
 def _serialize_video(row):
@@ -70,6 +83,46 @@ def _resolve_existing_video_path(file_path: str, stored_filename: str) -> Path |
             return path
 
     return None
+
+
+def _validate_time_controls(range_unit: str, range_value: int, interval: int) -> tuple[str, int, int]:
+    if range_unit not in _UNIT_SECONDS:
+        raise HTTPException(status_code=400, detail="range_unit must be one of: minutes, hours, days")
+    if range_value <= 0:
+        raise HTTPException(status_code=400, detail="range_value must be greater than zero")
+    if interval not in _ALLOWED_INTERVALS[range_unit]:
+        allowed = sorted(_ALLOWED_INTERVALS[range_unit])
+        raise HTTPException(status_code=400, detail=f"interval must be one of {allowed} for unit '{range_unit}'")
+    return range_unit, range_value, interval
+
+
+def _time_window_start(range_unit: str, range_value: int, now: datetime) -> datetime:
+    if range_unit == "minutes":
+        return now - timedelta(minutes=range_value)
+    if range_unit == "hours":
+        return now - timedelta(hours=range_value)
+    return now - timedelta(days=range_value)
+
+
+def _bucket_floor(ts: datetime, range_unit: str, interval: int) -> datetime:
+    epoch = datetime(1970, 1, 1)
+    step_seconds = _UNIT_SECONDS[range_unit] * interval
+    elapsed = int((ts - epoch).total_seconds())
+    bucket_seconds = elapsed - (elapsed % step_seconds)
+    return epoch + timedelta(seconds=bucket_seconds)
+
+
+def _timeline_label(ts: datetime, range_unit: str) -> str:
+    if range_unit == "minutes":
+        return ts.strftime("%m-%d %H:%M")
+    if range_unit == "hours":
+        return ts.strftime("%m-%d %H:00")
+    return ts.strftime("%Y-%m-%d")
+
+
+def _hour_bucket_label(start_hour: int, width: int) -> str:
+    end_hour = min(23, start_hour + width - 1)
+    return f"{start_hour:02d}:00-{end_hour:02d}:59"
 
 @app.post("/upload")
 async def upload(file: UploadFile, db=Depends(get_db)):
@@ -157,6 +210,7 @@ def get_kpis(db=Depends(get_db)):
     failed_videos = db.query(func.count(Video.id)).filter(Video.status == "failed").scalar() or 0
     total_events = db.query(func.count(Event.id)).scalar() or 0
     unique_people = db.query(func.count(func.distinct(Event.person_id))).scalar() or 0
+    total_track_detections = db.query(Event.video_id, Event.person_id).distinct().count()
 
     return {
         "total_videos": int(total_videos),
@@ -164,7 +218,102 @@ def get_kpis(db=Depends(get_db)):
         "failed_videos": int(failed_videos),
         "total_events": int(total_events),
         "unique_people": int(unique_people),
+        "total_track_detections": int(total_track_detections),
         "avg_events_per_completed_video": (float(total_events) / float(completed_videos)) if completed_videos else 0.0,
+    }
+
+
+@app.get("/kpis/events-timeline")
+def get_events_timeline(
+    range_unit: str = Query(default="hours"),
+    range_value: int = Query(default=24, ge=1),
+    interval: int = Query(default=1, ge=1),
+    db=Depends(get_db),
+):
+    range_unit, range_value, interval = _validate_time_controls(range_unit, range_value, interval)
+    now = datetime.now().replace(microsecond=0)
+    start = _time_window_start(range_unit, range_value, now)
+
+    rows = (
+        db.query(Event.event_timestamp)
+        .filter(Event.event_timestamp >= start)
+        .filter(Event.event_timestamp <= now)
+        .all()
+    )
+
+    counts = {}
+    for (event_timestamp,) in rows:
+        bucket = _bucket_floor(event_timestamp, range_unit, interval)
+        counts[bucket] = counts.get(bucket, 0) + 1
+
+    points = []
+    step = timedelta(seconds=_UNIT_SECONDS[range_unit] * interval)
+    cursor = _bucket_floor(start, range_unit, interval)
+    last_bucket = _bucket_floor(now, range_unit, interval)
+    while cursor <= last_bucket:
+        points.append(
+            {
+                "bucket_start": cursor.isoformat(),
+                "label": _timeline_label(cursor, range_unit),
+                "events": int(counts.get(cursor, 0)),
+            }
+        )
+        cursor += step
+
+    return {
+        "range": {
+            "unit": range_unit,
+            "value": int(range_value),
+            "interval": int(interval),
+            "start": start.isoformat(),
+            "end": now.isoformat(),
+        },
+        "points": points,
+    }
+
+
+@app.get("/kpis/people-by-hour")
+def get_unique_people_by_hour(
+    range_unit: str = Query(default="hours"),
+    range_value: int = Query(default=24, ge=1),
+    interval: int = Query(default=1, ge=1),
+    db=Depends(get_db),
+):
+    range_unit, range_value, interval = _validate_time_controls(range_unit, range_value, interval)
+    now = datetime.now().replace(microsecond=0)
+    start = _time_window_start(range_unit, range_value, now)
+
+    hour_width = interval if range_unit == "hours" else 1
+    rows = (
+        db.query(Event.person_id, Event.event_timestamp)
+        .filter(Event.event_timestamp >= start)
+        .filter(Event.event_timestamp <= now)
+        .all()
+    )
+
+    people_by_hour = {h: set() for h in range(0, 24, hour_width)}
+    for person_id, event_timestamp in rows:
+        bucket = (event_timestamp.hour // hour_width) * hour_width
+        people_by_hour[bucket].add(person_id)
+
+    points = [
+        {
+            "label": _hour_bucket_label(hour_start, hour_width),
+            "unique_people": len(people_by_hour[hour_start]),
+        }
+        for hour_start in sorted(people_by_hour)
+        if people_by_hour[hour_start]
+    ]
+
+    return {
+        "range": {
+            "unit": range_unit,
+            "value": int(range_value),
+            "interval": int(interval),
+            "start": start.isoformat(),
+            "end": now.isoformat(),
+        },
+        "points": points,
     }
 
 

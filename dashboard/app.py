@@ -1,11 +1,19 @@
 from pathlib import Path
 import mimetypes
+import random
 
+import altair as alt
+import pandas as pd
 import streamlit as st
 import requests
 
 API_URL = "http://localhost:8000"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+TIME_INTERVAL_PRESETS = {
+    "minutes": [1, 5, 10],
+    "hours": [1, 2, 6],
+    "days": [1, 7],
+}
 
 st.set_page_config(page_title="Coffee Vision Dashboard", layout="wide")
 
@@ -193,6 +201,7 @@ def fetch_kpis(api_url=API_URL):
         "failed_videos": 0,
         "total_events": 0,
         "unique_people": 0,
+        "total_track_detections": 0,
         "avg_events_per_completed_video": 0.0,
     }
 
@@ -210,6 +219,95 @@ def fetch_kpis(api_url=API_URL):
         return default
 
     return data if isinstance(data, dict) else default
+
+
+def fetch_events_timeline(api_url=API_URL, *, range_unit="hours", range_value=24, interval=1):
+    default = {
+        "range": {
+            "unit": range_unit,
+            "value": int(range_value),
+            "interval": int(interval),
+        },
+        "points": [],
+    }
+
+    try:
+        response = requests.get(
+            f"{api_url}/kpis/events-timeline",
+            params={"range_unit": range_unit, "range_value": range_value, "interval": interval},
+            timeout=10,
+        )
+    except requests.RequestException:
+        return default
+
+    if not response.ok:
+        return default
+
+    try:
+        data = response.json()
+    except ValueError:
+        return default
+
+    if not isinstance(data, dict):
+        return default
+
+    points = data.get("points", [])
+    if not isinstance(points, list):
+        points = []
+
+    return {
+        "range": data.get("range", default["range"]),
+        "points": points,
+    }
+
+
+def fetch_people_by_hour(api_url=API_URL, *, range_unit="hours", range_value=24, interval=1):
+    default = {
+        "range": {
+            "unit": range_unit,
+            "value": int(range_value),
+            "interval": int(interval),
+        },
+        "points": [],
+    }
+
+    try:
+        response = requests.get(
+            f"{api_url}/kpis/people-by-hour",
+            params={"range_unit": range_unit, "range_value": range_value, "interval": interval},
+            timeout=10,
+        )
+    except requests.RequestException:
+        return default
+
+    if not response.ok:
+        return default
+
+    try:
+        data = response.json()
+    except ValueError:
+        return default
+
+    if not isinstance(data, dict):
+        return default
+
+    points = data.get("points", [])
+    if not isinstance(points, list):
+        points = []
+
+    return {
+        "range": data.get("range", default["range"]),
+        "points": points,
+    }
+
+
+def _fake_event_type_rows(seed_value: int):
+    rng = random.Random(seed_value)
+    return [
+        {"event_type": "customer seated", "events": rng.randint(40, 120)},
+        {"event_type": "customer places order", "events": rng.randint(30, 100)},
+        {"event_type": "customer leaves", "events": rng.randint(20, 90)},
+    ]
 
 
 def resolve_video_path(video, show_bound_boxes=False):
@@ -267,12 +365,89 @@ def render_dashboard():
             st.session_state["last_upload_feedback"] = None
 
         st.header("KPIs")
+        ctrl1, ctrl2, ctrl3 = st.columns(3)
+
+        time_unit = ctrl1.selectbox(
+            "Range unit",
+            ["minutes", "hours", "days"],
+            index=1,
+            key="kpi_range_unit",
+        )
+        if time_unit == "minutes":
+            default_range, max_range = 60, 24 * 60
+        elif time_unit == "hours":
+            default_range, max_range = 24, 24 * 14
+        else:
+            default_range, max_range = 7, 365
+
+        range_value = ctrl2.number_input(
+            "Last",
+            min_value=1,
+            max_value=max_range,
+            value=default_range,
+            step=1,
+            key="kpi_range_value",
+        )
+
+        interval = ctrl3.selectbox(
+            "Interval",
+            TIME_INTERVAL_PRESETS[time_unit],
+            key="kpi_interval",
+        )
+
         kpis = fetch_kpis()
-        kpi_col1, kpi_col2, kpi_col3 = st.columns(3)
-        kpi_col1.metric("Videos", kpis["total_videos"])
-        kpi_col2.metric("Events", kpis["total_events"])
-        kpi_col3.metric("Unique People", kpis["unique_people"])
-        st.metric("Avg Events / Completed Video", f"{kpis['avg_events_per_completed_video']:.2f}")
+        events_timeline = fetch_events_timeline(
+            range_unit=time_unit,
+            range_value=int(range_value),
+            interval=int(interval),
+        )
+        people_by_hour = fetch_people_by_hour(
+            range_unit=time_unit,
+            range_value=int(range_value),
+            interval=int(interval),
+        )
+
+        grid_col1, grid_col2 = st.columns(2)
+
+        with grid_col1:
+            st.subheader("Totals")
+            tc1, tc2 = st.columns(2)
+            tc3, tc4 = st.columns(2)
+            tc1.metric("People detected (tracks)", kpis["total_track_detections"])
+            tc2.metric("Unique people", kpis["unique_people"])
+            tc3.metric("Events", kpis["total_events"])
+            tc4.metric("Videos", kpis["total_videos"])
+
+            st.subheader("Unique People by Hour")
+            pie_points = people_by_hour.get("points", [])
+            if pie_points:
+                pie_df = pd.DataFrame(pie_points)
+                pie_chart = (
+                    alt.Chart(pie_df)
+                    .mark_arc()
+                    .encode(
+                        theta=alt.Theta(field="unique_people", type="quantitative"),
+                        color=alt.Color(field="label", type="nominal", legend=alt.Legend(title="Hour bucket")),
+                        tooltip=["label", "unique_people"],
+                    )
+                )
+                st.altair_chart(pie_chart, use_container_width=True)
+            else:
+                st.info("No unique-people hourly data available for the selected window.")
+
+        with grid_col2:
+            st.subheader("Events Detected Over Time")
+            timeline_points = events_timeline.get("points", [])
+            if timeline_points:
+                timeline_df = pd.DataFrame(timeline_points)
+                st.bar_chart(timeline_df, x="label", y="events", use_container_width=True)
+            else:
+                st.info("No event timeline data available for the selected window.")
+
+            st.subheader("Event Type Composition (Simulated)")
+            fake_seed = int(range_value) * 100 + int(interval)
+            fake_df = pd.DataFrame(_fake_event_type_rows(fake_seed))
+            st.bar_chart(fake_df, x="event_type", y="events", use_container_width=True)
 
     with right_col:
         st.subheader("Video Viewer")

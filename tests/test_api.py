@@ -209,7 +209,140 @@ def test_kpis_endpoint_returns_aggregates(monkeypatch, test_db_session, temp_vid
     assert payload["failed_videos"] == 1
     assert payload["total_events"] == 2
     assert payload["unique_people"] == 2
+    assert payload["total_track_detections"] == 2
     assert payload["avg_events_per_completed_video"] == 2.0
+
+
+def test_events_timeline_endpoint_returns_points(monkeypatch, test_db_session, temp_videos_dir):
+    import api.main as api_main
+    from db.models import Event
+
+    monkeypatch.setattr(api_main, "init_db", lambda: None)
+    monkeypatch.setattr(api_main, "VIDEOS_DIR", temp_videos_dir)
+
+    row = Video(
+        original_filename="20260324T150520_C0104_SouthEast28.mp4",
+        stored_filename="20260324T150520_C0104_SouthEast28.mp4",
+        file_path="videos/20260324T150520_C0104_SouthEast28.mp4",
+        capture_started_at=datetime(2026, 3, 24, 15, 5, 20),
+        camera_id="C0104",
+        location_name="SouthEast",
+        sector_number=28,
+        status="completed",
+    )
+    test_db_session.add(row)
+    test_db_session.commit()
+    test_db_session.refresh(row)
+
+    now = datetime.now().replace(microsecond=0)
+    test_db_session.add_all(
+        [
+            Event(
+                video_id=row.id,
+                person_id=1,
+                event_type="customer_seated",
+                frame_index=10,
+                event_second=1.0,
+                event_timestamp=now,
+            ),
+            Event(
+                video_id=row.id,
+                person_id=2,
+                event_type="customer_seated",
+                frame_index=20,
+                event_second=2.0,
+                event_timestamp=now,
+            ),
+        ]
+    )
+    test_db_session.commit()
+
+    def override_get_db():
+        yield test_db_session
+
+    api_main.app.dependency_overrides[api_main.get_db] = override_get_db
+
+    with TestClient(api_main.app) as client:
+        response = client.get("/kpis/events-timeline", params={"range_unit": "hours", "range_value": 1, "interval": 1})
+
+    api_main.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["range"]["unit"] == "hours"
+    assert isinstance(payload["points"], list)
+    assert len(payload["points"]) >= 1
+    assert payload["points"][-1]["events"] >= 2
+
+
+def test_people_by_hour_endpoint_returns_points(monkeypatch, test_db_session, temp_videos_dir):
+    import api.main as api_main
+    from db.models import Event
+
+    monkeypatch.setattr(api_main, "init_db", lambda: None)
+    monkeypatch.setattr(api_main, "VIDEOS_DIR", temp_videos_dir)
+
+    row = Video(
+        original_filename="20260324T150520_C0104_SouthEast28.mp4",
+        stored_filename="20260324T150520_C0104_SouthEast28.mp4",
+        file_path="videos/20260324T150520_C0104_SouthEast28.mp4",
+        capture_started_at=datetime(2026, 3, 24, 15, 5, 20),
+        camera_id="C0104",
+        location_name="SouthEast",
+        sector_number=28,
+        status="completed",
+    )
+    test_db_session.add(row)
+    test_db_session.commit()
+    test_db_session.refresh(row)
+
+    now = datetime.now().replace(microsecond=0)
+    test_db_session.add_all(
+        [
+            Event(
+                video_id=row.id,
+                person_id=1,
+                event_type="customer_seated",
+                frame_index=10,
+                event_second=1.0,
+                event_timestamp=now,
+            ),
+            Event(
+                video_id=row.id,
+                person_id=1,
+                event_type="customer_seated",
+                frame_index=11,
+                event_second=1.1,
+                event_timestamp=now,
+            ),
+            Event(
+                video_id=row.id,
+                person_id=2,
+                event_type="customer_seated",
+                frame_index=20,
+                event_second=2.0,
+                event_timestamp=now,
+            ),
+        ]
+    )
+    test_db_session.commit()
+
+    def override_get_db():
+        yield test_db_session
+
+    api_main.app.dependency_overrides[api_main.get_db] = override_get_db
+
+    with TestClient(api_main.app) as client:
+        response = client.get("/kpis/people-by-hour", params={"range_unit": "hours", "range_value": 1, "interval": 1})
+
+    api_main.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["range"]["unit"] == "hours"
+    assert isinstance(payload["points"], list)
+    assert len(payload["points"]) >= 1
+    assert payload["points"][0]["unique_people"] >= 2
 
 
 def test_reprocess_video_endpoint_success(monkeypatch, test_db_session, temp_videos_dir):

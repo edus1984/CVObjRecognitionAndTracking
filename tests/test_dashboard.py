@@ -44,6 +44,37 @@ def test_fetch_kpis_returns_default_on_invalid_response(monkeypatch):
     payload = dashboard_app.fetch_kpis()
     assert payload["total_videos"] == 0
     assert payload["total_events"] == 0
+    assert payload["total_track_detections"] == 0
+
+
+def test_fetch_events_timeline_returns_default_on_request_failure(monkeypatch):
+    import dashboard.app as dashboard_app
+
+    def raise_error(*_args, **_kwargs):
+        raise dashboard_app.requests.RequestException("down")
+
+    monkeypatch.setattr(dashboard_app.requests, "get", raise_error)
+
+    payload = dashboard_app.fetch_events_timeline()
+    assert payload["points"] == []
+    assert payload["range"]["unit"] == "hours"
+
+
+def test_fetch_people_by_hour_returns_default_on_invalid_payload(monkeypatch):
+    import dashboard.app as dashboard_app
+
+    class Response:
+        ok = True
+
+        @staticmethod
+        def json():
+            return []
+
+    monkeypatch.setattr(dashboard_app.requests, "get", lambda *_args, **_kwargs: Response())
+
+    payload = dashboard_app.fetch_people_by_hour()
+    assert payload["points"] == []
+    assert payload["range"]["unit"] == "hours"
 
 
 def test_resolve_video_path_uses_bound_boxes_when_enabled(monkeypatch, tmp_path):
